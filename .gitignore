@@ -1,0 +1,56 @@
+# Byte-compiled / optimized / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environment / secrets
+.env
+.env.local
+
+# MLflow
+mlruns/
+mlflow.db
+mlartifacts/
+
+# Data — raw is downloaded, reference is regenerated, live is recorded at runtime
+data/raw/
+data/reference/
+data/live/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# AI related files
+AGENT.md
+CLAUDE.md
+CLAUDE.local.md
+session_prompts.md
+
+# AI related folders
+.claude/
+.claude*/
+Summary/
