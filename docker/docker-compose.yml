@@ -1,0 +1,82 @@
+# Full local stack: MLflow tracking server + one-shot trainer + API + dashboard.
+# All four services share one image (built once from docker/Dockerfile.api).
+#
+#   docker compose -f docker/docker-compose.yml up --build
+#
+# Inside this network MLflow is reached at http://mlflow:5000 (no macOS port-5000
+# conflict in containers). On the HOST, MLflow is published on 5001 to dodge
+# macOS Control Center; API on 8000; dashboard on 8501.
+
+x-churn-app: &churn-app
+  image: churn-stack:latest
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.api
+  environment: &churn-env
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+  volumes:
+    - ../data:/app/data
+
+services:
+  mlflow:
+    image: churn-stack:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+    volumes:
+      - mlflow-data:/mlflow
+    ports:
+      - "5001:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # One-shot: prepare data + train + register ChurnModel@Production, then exit.
+  trainer:
+    <<: *churn-app
+    command: ["sh", "-c", "python scripts/prepare_data.py && python -m src.pipeline.train"]
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *churn-app
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      trainer:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  dashboard:
+    <<: *churn-app
+    command: ["streamlit", "run", "monitoring/dashboard.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
+    environment:
+      <<: *churn-env
+      API_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+volumes:
+  mlflow-data:

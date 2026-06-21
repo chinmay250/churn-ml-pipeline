@@ -1,0 +1,50 @@
+# Multi-stage build for the churn stack (API / trainer / dashboard share this image).
+# Build context is the repo root:  docker build -f docker/Dockerfile.api -t churn:latest .
+# For AWS (Session 6) build amd64:  docker build --platform linux/amd64 ...
+
+# ---- builder: resolve + install deps into a venv with uv ----
+FROM python:3.12-slim AS builder
+
+# uv: fast, reproducible installs from the committed uv.lock.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
+
+WORKDIR /app
+
+# Layer 1: dependencies only (cached unless pyproject/lock change).
+COPY pyproject.toml uv.lock README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+
+# Layer 2: project source + install the project itself.
+COPY src ./src
+COPY scripts ./scripts
+COPY monitoring ./monitoring
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+# ---- runtime: slim image with just the venv + source ----
+FROM python:3.12-slim AS runtime
+
+# libgomp1 = OpenMP runtime required by XGBoost at import time.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /app /app
+
+# Put the venv on PATH; run as a non-root user.
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+RUN useradd --create-home appuser && chown -R appuser /app
+USER appuser
+
+EXPOSE 8000
+# Default command serves the API; compose overrides it for trainer/dashboard.
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

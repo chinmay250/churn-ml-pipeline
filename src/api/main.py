@@ -3,7 +3,8 @@
 Endpoints:
 - GET  /health        — liveness + whether the model is loaded.
 - POST /predict        — single-customer churn prediction.
-- POST /drift/record   — append live features to the log for Session-4 drift checks.
+- POST /drift/record   — append live features to the log for drift checks.
+- GET  /drift/report   — score recorded live features against the reference distribution.
 
 The model is loaded once at startup (lifespan). Every request is logged with
 structlog (method, path, status, duration). The model is provided via a FastAPI
@@ -28,10 +29,15 @@ from src.api.schemas import (
     PredictionResponse,
     RecordResponse,
 )
+from src.drift.alerts import handle_drift
+from src.drift.monitor import DriftMonitor, load_live_features
 from src.utils.config import settings
 from src.utils.logging import configure_logging, get_logger
 
 log = get_logger("api")
+
+# Lazily-built reference monitor, shared across requests (overridable in tests).
+_drift_monitor: DriftMonitor | None = None
 
 
 @asynccontextmanager
@@ -52,6 +58,14 @@ app = FastAPI(title="Churn Prediction API", version="0.1.0", lifespan=lifespan)
 def get_model_loader() -> ModelLoader:
     """Dependency — overridden in tests with a fake loader."""
     return model_loader
+
+
+def get_drift_monitor() -> DriftMonitor:
+    """Dependency — builds the reference monitor on first use, then caches it."""
+    global _drift_monitor
+    if _drift_monitor is None:
+        _drift_monitor = DriftMonitor.from_reference_path()
+    return _drift_monitor
 
 
 @app.middleware("http")
@@ -121,3 +135,21 @@ def record(features: CustomerFeatures) -> RecordResponse:
     total = sum(1 for _ in path.open())
     log.info("feature_recorded", path=str(path), total_recorded=total)
     return RecordResponse(recorded=True, total_recorded=total)
+
+
+@app.get("/drift/report")
+def drift_report(monitor: DriftMonitor = Depends(get_drift_monitor)) -> dict:
+    """Score recorded live features against the reference distribution.
+
+    Returns the DriftReport plus an alert summary (retraining is NOT auto-triggered
+    from this read-only endpoint — ``auto_retrain=False``).
+    """
+    current = load_live_features()
+    if current.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No recorded features at {settings.live_data_path}; POST to /drift/record first.",
+        )
+    report = monitor.check(current)
+    alert = handle_drift(report, auto_retrain=False)
+    return {"report": report.to_dict(), "alert": alert}

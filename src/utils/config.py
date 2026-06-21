@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     raw_data_path: str = "data/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv"
     # Where /drift/record appends live production features (consumed in Session 4).
     live_data_path: str = "data/live/recorded_features.jsonl"
+    # Time series of drift snapshots, plotted by the Streamlit dashboard (Session 5).
+    drift_history_path: str = "data/live/drift_history.parquet"
 
     # Logging
     dev_mode: bool = True
